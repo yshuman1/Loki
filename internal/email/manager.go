@@ -3,6 +3,8 @@ package email
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/yshuman1/loki/internal/models"
@@ -10,16 +12,18 @@ import (
 
 // Manager manages multiple email accounts
 type Manager struct {
-	accounts []*models.Account
-	clients  map[string]*Client
-	mu       sync.RWMutex
+	accounts   []*models.Account
+	clients    map[string]*Client
+	emailCache map[string][]*models.Email // key: "accountID-folderName"
+	mu         sync.RWMutex
 }
 
 // NewManager creates a new email manager
 func NewManager(accounts []*models.Account) *Manager {
 	return &Manager{
-		accounts: accounts,
-		clients:  make(map[string]*Client),
+		accounts:   accounts,
+		clients:    make(map[string]*Client),
+		emailCache: make(map[string][]*models.Email),
 	}
 }
 
@@ -76,6 +80,16 @@ func (m *Manager) GetFolders(ctx context.Context, accountID string) ([]*models.F
 
 // GetEmails fetches emails from a specific folder
 func (m *Manager) GetEmails(ctx context.Context, accountID, folderName string, limit int) ([]*models.Email, error) {
+	// Check cache first
+	cacheKey := accountID + "-" + folderName
+	m.mu.RLock()
+	if cached, ok := m.emailCache[cacheKey]; ok {
+		m.mu.RUnlock()
+		return cached, nil
+	}
+	m.mu.RUnlock()
+
+	// Not in cache, fetch from IMAP
 	m.mu.RLock()
 	client, ok := m.clients[accountID]
 	m.mu.RUnlock()
@@ -94,11 +108,16 @@ func (m *Manager) GetEmails(ctx context.Context, accountID, folderName string, l
 		email.FolderID = accountID + "-" + folderName
 	}
 
+	// Store in cache
+	m.mu.Lock()
+	m.emailCache[cacheKey] = emails
+	m.mu.Unlock()
+
 	return emails, nil
 }
 
 // GetEmailBody fetches the full body of an email
-func (m *Manager) GetEmailBody(ctx context.Context, accountID, folderName string, uid uint32) (*models.Email, error) {
+func (m *Manager) GetEmailBody(ctx context.Context, accountID, folderName string, seqNum uint32) (*models.Email, error) {
 	m.mu.RLock()
 	client, ok := m.clients[accountID]
 	m.mu.RUnlock()
@@ -107,7 +126,7 @@ func (m *Manager) GetEmailBody(ctx context.Context, accountID, folderName string
 		return nil, fmt.Errorf("account not connected: %s", accountID)
 	}
 
-	textBody, htmlBody, err := client.FetchEmailBody(ctx, folderName, uid)
+	textBody, htmlBody, err := client.FetchEmailBody(ctx, folderName, seqNum)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +153,95 @@ func (m *Manager) GetFolderStatus(ctx context.Context, accountID, folderName str
 	return client.GetFolderStatus(ctx, folderName)
 }
 
+// Archive archives emails
+func (m *Manager) Archive(ctx context.Context, accountID string, ids []string) error {
+	m.mu.RLock()
+	client, ok := m.clients[accountID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("account not connected: %s", accountID)
+	}
+
+	uids, err := parseUIDs(ids)
+	if err != nil {
+		return err
+	}
+
+	return client.Archive(ctx, uids)
+}
+
+// Delete deletes emails
+func (m *Manager) Delete(ctx context.Context, accountID string, ids []string) error {
+	m.mu.RLock()
+	client, ok := m.clients[accountID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("account not connected: %s", accountID)
+	}
+
+	uids, err := parseUIDs(ids)
+	if err != nil {
+		return err
+	}
+
+	return client.Delete(ctx, uids)
+}
+
+// MarkRead marks emails as read/unread
+func (m *Manager) MarkRead(ctx context.Context, accountID string, ids []string, read bool) error {
+	m.mu.RLock()
+	client, ok := m.clients[accountID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("account not connected: %s", accountID)
+	}
+
+	uids, err := parseUIDs(ids)
+	if err != nil {
+		return err
+	}
+
+	return client.MarkRead(ctx, uids, read)
+}
+
 // GetAccounts returns all configured accounts
 func (m *Manager) GetAccounts() []*models.Account {
 	return m.accounts
+}
+
+func parseUIDs(ids []string) ([]uint32, error) {
+	var uids []uint32
+	for _, id := range ids {
+		uid, err := strconv.ParseUint(id, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid UID %s: %w", id, err)
+		}
+		uids = append(uids, uint32(uid))
+	}
+	return uids, nil
+}
+
+// ClearCache clears the email cache (for refresh)
+func (m *Manager) ClearCache(accountID, folderName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if accountID == "" {
+		// Clear all cache
+		m.emailCache = make(map[string][]*models.Email)
+	} else if folderName == "" {
+		// Clear all folders for account
+		for key := range m.emailCache {
+			if strings.HasPrefix(key, accountID+"-") {
+				delete(m.emailCache, key)
+			}
+		}
+	} else {
+		// Clear specific folder
+		cacheKey := accountID + "-" + folderName
+		delete(m.emailCache, cacheKey)
+	}
 }

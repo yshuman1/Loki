@@ -130,13 +130,13 @@ func (c *Config) ToModels() []*models.Account {
 }
 
 func getConfigPath() (string, error) {
-	// Get user config directory
-	configDir, err := os.UserConfigDir()
+	// Get user home directory
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("failed to get config directory: %w", err)
+		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	return filepath.Join(configDir, "loki", "config.json"), nil
+	return filepath.Join(homeDir, ".config", "loki", "config.json"), nil
 }
 
 func createDefaultConfig(path string) (*Config, error) {

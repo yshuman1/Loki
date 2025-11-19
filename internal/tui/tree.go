@@ -118,15 +118,25 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 			m.cursor = len(m.nodes) - 1
 
 		case "o", "enter", "l", "right":
-			// Expand node
+			// Expand account or select folder
 			if m.cursor < len(m.nodes) {
 				node := m.nodes[m.cursor]
 				if node.nodeType == models.TreeNodeTypeAccount && !node.expanded {
+					// Expand account
 					node.expanded = true
 					node.account.Expanded = true
 					// Emit message to load folders
 					return m, func() tea.Msg {
 						return AccountExpandedMsg{AccountID: node.account.ID}
+					}
+				} else if node.nodeType == models.TreeNodeTypeFolder {
+					// Select folder
+					m.selected = m.cursor
+					return m, func() tea.Msg {
+						return FolderSelectedMsg{
+							AccountID:  node.folder.AccountID,
+							FolderName: node.folder.Name,
+						}
 					}
 				}
 			}
@@ -139,22 +149,6 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 					node.expanded = false
 					node.account.Expanded = false
 					m.rebuildNodes()
-				}
-			}
-
-		case " ":
-			// Select folder
-			m.selected = m.cursor
-			// Emit folder selected message
-			if m.cursor < len(m.nodes) {
-				node := m.nodes[m.cursor]
-				if node.nodeType == models.TreeNodeTypeFolder {
-					return m, func() tea.Msg {
-						return FolderSelectedMsg{
-							AccountID:  node.folder.AccountID,
-							FolderName: node.folder.Name,
-						}
-					}
 				}
 			}
 		}

@@ -27,9 +27,14 @@ func (m *EmailListModel) SetEmails(emails []*models.Email) {
 	m.emails = emails
 }
 
+func (m *EmailListModel) SetHeight(height int) {
+	m.height = height
+}
+
 func (m *EmailListModel) Update(msg tea.Msg) (*EmailListModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		oldCursor := m.cursor
 		switch msg.String() {
 		case "j", "down":
 			if m.cursor < len(m.emails)-1 {
@@ -45,7 +50,19 @@ func (m *EmailListModel) Update(msg tea.Msg) (*EmailListModel, tea.Cmd) {
 			m.cursor = len(m.emails) - 1
 		case "enter", " ":
 			m.selected = m.cursor
-			// TODO: Emit EmailSelectedMsg
+			// Emit EmailSelectedMsg
+			if m.cursor < len(m.emails) {
+				return m, func() tea.Msg {
+					return EmailSelectedMsg{Email: m.emails[m.cursor]}
+				}
+			}
+		}
+
+		// Auto-select email when cursor moves (lazygit-style)
+		if m.cursor != oldCursor && m.cursor < len(m.emails) {
+			return m, func() tea.Msg {
+				return EmailSelectedMsg{Email: m.emails[m.cursor]}
+			}
 		}
 	}
 	return m, nil
@@ -56,33 +73,59 @@ func (m *EmailListModel) View() string {
 		return helpStyle.Render("No emails")
 	}
 
+	// Calculate how many emails can fit
+	// Each email takes 2 lines (from+date line, subject line)
+	maxLines := m.height
+	if maxLines <= 0 {
+		maxLines = 20
+	}
+	emailsPerScreen := maxLines / 2 // Changed from 3 to 2
+	if emailsPerScreen <= 0 {
+		emailsPerScreen = 1
+	}
+
+	// Calculate scroll offset to keep cursor visible
+	scrollOffset := 0
+	if m.cursor >= emailsPerScreen {
+		scrollOffset = m.cursor - emailsPerScreen + 1
+	}
+
+	// Determine visible range
+	visibleStart := scrollOffset
+	visibleEnd := scrollOffset + emailsPerScreen
+	if visibleEnd > len(m.emails) {
+		visibleEnd = len(m.emails)
+	}
+
 	var b strings.Builder
 
-	for i, email := range m.emails {
+	for i := visibleStart; i < visibleEnd; i++ {
+		email := m.emails[i]
+
 		// Format time
 		timeStr := formatEmailTime(email.Date)
 
 		// Priority icon
 		priorityIcon := email.Priority.Icon()
 
-		// Truncate subject
-		subject := truncate(email.Subject, 25)
-		from := truncate(email.From.Address, 20)
+		// Truncate subject and from to fit in panel (width ~31 after borders/padding)
+		subject := truncate(email.Subject, 22)
+		from := truncate(email.From.Address, 15)
 
 		var line string
 		if i == m.cursor {
+			// Selected style - use more compact single-line format
 			line = emailItemSelectedStyle.Render(
-				fmt.Sprintf("%s %s %4s\n   %s",
-					priorityIcon, from, timeStr, subject),
+				fmt.Sprintf("%s %-15s %s\n%s", priorityIcon, from, timeStr, subject),
 			)
 		} else {
 			style := emailItemStyle
 			if !email.Read {
 				style = emailItemUnreadStyle
 			}
+			// Unselected style - use compact single-line format
 			line = style.Render(
-				fmt.Sprintf("%s %s %4s\n   %s",
-					priorityIcon, from, timeStr, subject),
+				fmt.Sprintf("%s %-15s %s\n%s", priorityIcon, from, timeStr, subject),
 			)
 		}
 
@@ -108,4 +151,26 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+func (m *EmailListModel) GetSelectedEmail() *models.Email {
+	if len(m.emails) == 0 || m.cursor < 0 || m.cursor >= len(m.emails) {
+		return nil
+	}
+	return m.emails[m.cursor]
+}
+
+func (m *EmailListModel) RemoveEmail(id string) {
+	for i, email := range m.emails {
+		if email.ID == id {
+			// Remove from slice
+			m.emails = append(m.emails[:i], m.emails[i+1:]...)
+
+			// Adjust cursor if needed
+			if m.cursor >= len(m.emails) && m.cursor > 0 {
+				m.cursor--
+			}
+			return
+		}
+	}
 }

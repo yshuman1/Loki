@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -106,6 +107,7 @@ func NewModel() *Model {
 
 // Init implements tea.Model
 func (m *Model) Init() tea.Cmd {
+	m.statusMessage = "Connecting to email server..."
 	return tea.Batch(
 		tea.EnterAltScreen,
 		m.connectAndLoad,
@@ -192,6 +194,41 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusPanel = FocusPanelPreview
 			}
 			return m, nil
+
+		case "a":
+			// Archive email
+			if m.focusPanel == FocusPanelList {
+				if email := m.emailList.GetSelectedEmail(); email != nil {
+					m.statusMessage = fmt.Sprintf("Archiving %s...", truncate(email.Subject, 20))
+					return m, m.archiveEmail(email.ID)
+				}
+			}
+			return m, nil
+
+		case "d":
+			// Delete email
+			if m.focusPanel == FocusPanelList {
+				if email := m.emailList.GetSelectedEmail(); email != nil {
+					m.statusMessage = fmt.Sprintf("Deleting %s...", truncate(email.Subject, 20))
+					return m, m.deleteEmail(email.ID)
+				}
+			}
+			return m, nil
+
+		case "r":
+			// Mark read/unread
+			if m.focusPanel == FocusPanelList {
+				if email := m.emailList.GetSelectedEmail(); email != nil {
+					newReadStatus := !email.Read
+					statusStr := "read"
+					if !newReadStatus {
+						statusStr = "unread"
+					}
+					m.statusMessage = fmt.Sprintf("Marking as %s...", statusStr)
+					return m, m.markRead(email.ID, newReadStatus)
+				}
+			}
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -201,28 +238,47 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AccountsLoadedMsg:
 		m.accounts = msg.Accounts
-		m.tree.SetAccounts(msg.Accounts)
+		// Tree already updated in connectAndLoad
+		m.statusMessage = fmt.Sprintf("Connected. Ready to use. (%d account(s))", len(msg.Accounts))
 		return m, nil
 
 	case FoldersLoadedMsg:
 		m.tree.SetFolders(msg.AccountID, msg.Folders)
-		m.statusMessage = fmt.Sprintf("Loaded %d folders", len(msg.Folders))
+		m.statusMessage = fmt.Sprintf("Loaded %d folders. Press Enter on a folder to view emails.", len(msg.Folders))
 		return m, nil
 
 	case EmailsLoadedMsg:
 		m.emails = msg.Emails
 		m.emailList.SetEmails(msg.Emails)
-		m.statusMessage = fmt.Sprintf("Loaded %d emails", len(msg.Emails))
+		m.statusMessage = fmt.Sprintf("Loaded %d emails. Use j/k to navigate.", len(msg.Emails))
+
+		// Auto-select first email (lazygit-style)
+		if len(msg.Emails) > 0 {
+			m.currentEmail = msg.Emails[0]
+			m.preview.SetEmail(msg.Emails[0])
+		}
 		return m, nil
 
 	case EmailSelectedMsg:
 		m.currentEmail = msg.Email
 		m.preview.SetEmail(msg.Email)
-		return m, nil
+		m.statusMessage = "Fetching email body..."
+		// Fetch full body asynchronously
+		return m, m.loadEmailBody(msg.Email)
 
 	case ErrorMsg:
 		m.error = msg.Error
 		m.statusMessage = "Error: " + msg.Error
+		return m, nil
+
+	case EmailBodyLoadedMsg:
+		// Update current email if it matches
+		if m.currentEmail != nil && m.currentEmail.ID == msg.EmailID {
+			m.currentEmail.Body = msg.TextBody
+			m.currentEmail.BodyHTML = msg.HTMLBody
+			m.preview.SetEmail(m.currentEmail)
+			m.statusMessage = "Email loaded."
+		}
 		return m, nil
 
 	case FolderSelectedMsg:
@@ -232,6 +288,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AccountExpandedMsg:
 		m.statusMessage = fmt.Sprintf("Loading folders...")
 		return m, m.loadFoldersForAccount(msg.AccountID)
+
+	case EmailArchivedMsg:
+		m.emailList.RemoveEmail(msg.ID)
+		// Also remove from our local slice
+		for i, e := range m.emails {
+			if e.ID == msg.ID {
+				m.emails = append(m.emails[:i], m.emails[i+1:]...)
+				break
+			}
+		}
+		m.statusMessage = "Email archived"
+		return m, nil
+
+	case EmailDeletedMsg:
+		m.emailList.RemoveEmail(msg.ID)
+		// Also remove from our local slice
+		for i, e := range m.emails {
+			if e.ID == msg.ID {
+				m.emails = append(m.emails[:i], m.emails[i+1:]...)
+				break
+			}
+		}
+		m.statusMessage = "Email deleted"
+		return m, nil
+
+	case EmailMarkedReadMsg:
+		// Update in list
+		for _, e := range m.emails {
+			if e.ID == msg.ID {
+				e.Read = msg.Read
+				break
+			}
+		}
+		m.emailList.SetEmails(m.emails)
+		statusStr := "read"
+		if !msg.Read {
+			statusStr = "unread"
+		}
+		m.statusMessage = fmt.Sprintf("Email marked as %s", statusStr)
+		return m, nil
 	}
 
 	// Route updates to focused component
@@ -329,19 +425,23 @@ func (m *Model) View() string {
 
 func (m *Model) renderHeader() string {
 	return headerStyle.
-		Width(m.width).
+		Width(28).
+		Padding(1, 1, 0, 1).
 		Render("LOKI")
 }
 
 func (m *Model) renderEmailView() string {
 	// Calculate panel widths
 	treeWidth := 30
-	previewWidth := m.width - treeWidth - 35 // Remaining space
 	listWidth := 35
+	previewWidth := m.width - treeWidth - listWidth
+	if previewWidth < 0 {
+		previewWidth = 0
+	}
 
 	// Add top margin and adjust heights for cleaner borders
-	// Total height - header (1) - status bar (1) - top margin (0)
-	panelHeight := m.height - 2
+	// Total height - header (2) - status bar (1)
+	panelHeight := m.height - 3
 	if panelHeight < 0 {
 		panelHeight = 0
 	}
@@ -355,6 +455,14 @@ func (m *Model) renderEmailView() string {
 		m.focusPanel == FocusPanelTree,
 	)
 
+	// Calculate content height (same as renderPanel does internally)
+	contentHeight := panelHeight - 6 // borders, padding, title, separator
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
+
+	// Set height on email list so it knows how many to display
+	m.emailList.SetHeight(contentHeight)
 	listView := m.renderPanel(
 		m.emailList.View(),
 		listWidth,
@@ -380,7 +488,7 @@ func (m *Model) renderEmailView() string {
 	)
 
 	// Add top spacing
-	return "\n" + panels
+	return panels
 }
 
 func (m *Model) renderCalendarView() string {
@@ -403,9 +511,13 @@ func (m *Model) renderPanel(content string, width, height int, title string, foc
 		Render(title)
 
 	// Create a horizontal line separator
+	sepWidth := width - 4
+	if sepWidth < 0 {
+		sepWidth = 0
+	}
 	separator := lipgloss.NewStyle().
 		Foreground(borderColor).
-		Render(strings.Repeat("─", width-4))
+		Render(strings.Repeat("─", sepWidth))
 
 	// Calculate content area height
 	// Total height - 2 (borders) - 2 (padding) - 1 (title) - 1 (separator)
@@ -579,20 +691,28 @@ func (m *Model) connectAndLoad() tea.Msg {
 
 	// Get accounts with real folders
 	accounts := m.emailManager.GetAccounts()
+
+	// Auto-expand accounts so folders are visible on startup
 	for _, account := range accounts {
+		account.Expanded = true
+	}
+
+	// Set accounts on tree FIRST so they exist when we add folders
+	m.tree.SetAccounts(accounts)
+
+	// Now fetch and set folders for each account
+	for _, account := range accounts {
+		// Use timeout for folder listing
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		folders, err := m.emailManager.GetFolders(ctx, account.ID)
+		cancel()
+
 		if err != nil {
 			continue
 		}
 
-		// Update folder counts
-		for _, folder := range folders {
-			status, err := m.emailManager.GetFolderStatus(ctx, account.ID, folder.Name)
-			if err == nil {
-				folder.UnreadCount = status.UnreadCount
-				folder.TotalCount = status.TotalCount
-			}
-		}
+		// Set folders on tree view for this account
+		m.tree.SetFolders(account.ID, folders)
 	}
 
 	return AccountsLoadedMsg{Accounts: accounts}
@@ -620,6 +740,35 @@ func (m *Model) loadFoldersForAccount(accountID string) tea.Cmd {
 	}
 }
 
+func (m *Model) loadEmailBody(email *models.Email) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+
+		// Parse sequence number from email ID
+		var seqNum uint32
+		fmt.Sscanf(email.ID, "%d", &seqNum)
+
+		// Extract folder name from FolderID (format: "accountID-folderName")
+		parts := strings.SplitN(email.FolderID, "-", 2)
+		if len(parts) != 2 {
+			return ErrorMsg{Error: "Invalid folder ID"}
+		}
+		folderName := parts[1]
+
+		// Fetch body using sequence number
+		emailWithBody, err := m.emailManager.GetEmailBody(ctx, email.AccountID, folderName, seqNum)
+		if err != nil {
+			return ErrorMsg{Error: fmt.Sprintf("Failed to load email body: %v", err)}
+		}
+
+		return EmailBodyLoadedMsg{
+			EmailID:  email.ID,
+			TextBody: emailWithBody.Body,
+			HTMLBody: emailWithBody.BodyHTML,
+		}
+	}
+}
+
 func (m *Model) triageInbox() tea.Msg {
 	// TODO: Call Claude service to triage emails
 	return nil
@@ -644,6 +793,92 @@ type EmailSelectedMsg struct {
 	Email *models.Email
 }
 
+type EmailBodyLoadedMsg struct {
+	EmailID  string
+	TextBody string
+	HTMLBody string
+}
+
 type ErrorMsg struct {
 	Error string
+}
+
+// Messages for email operations
+type EmailArchivedMsg struct {
+	ID string
+}
+
+type EmailDeletedMsg struct {
+	ID string
+}
+
+type EmailMarkedReadMsg struct {
+	ID   string
+	Read bool
+}
+
+func (m *Model) archiveEmail(id string) tea.Cmd {
+	return func() tea.Msg {
+		var email *models.Email
+		for _, e := range m.emails {
+			if e.ID == id {
+				email = e
+				break
+			}
+		}
+
+		if email == nil {
+			return ErrorMsg{Error: "Email not found"}
+		}
+
+		err := m.emailManager.Archive(context.Background(), email.AccountID, []string{email.ID})
+		if err != nil {
+			return ErrorMsg{Error: fmt.Sprintf("Failed to archive: %v", err)}
+		}
+		return EmailArchivedMsg{ID: id}
+	}
+}
+
+func (m *Model) deleteEmail(id string) tea.Cmd {
+	return func() tea.Msg {
+		var email *models.Email
+		for _, e := range m.emails {
+			if e.ID == id {
+				email = e
+				break
+			}
+		}
+
+		if email == nil {
+			return ErrorMsg{Error: "Email not found"}
+		}
+
+		err := m.emailManager.Delete(context.Background(), email.AccountID, []string{email.ID})
+		if err != nil {
+			return ErrorMsg{Error: fmt.Sprintf("Failed to delete: %v", err)}
+		}
+		return EmailDeletedMsg{ID: id}
+	}
+}
+
+func (m *Model) markRead(id string, read bool) tea.Cmd {
+	return func() tea.Msg {
+		var email *models.Email
+		for _, e := range m.emails {
+			if e.ID == id {
+				email = e
+				break
+			}
+		}
+
+		if email == nil {
+			return ErrorMsg{Error: "Email not found"}
+		}
+
+		err := m.emailManager.MarkRead(context.Background(), email.AccountID, []string{email.ID}, read)
+		if err != nil {
+			return ErrorMsg{Error: fmt.Sprintf("Failed to mark read: %v", err)}
+		}
+		return EmailMarkedReadMsg{ID: id, Read: read}
+	}
 }

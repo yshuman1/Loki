@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -64,35 +63,35 @@ func shouldSkipFolder(name string) bool {
 	if name == "[Gmail]" {
 		return true
 	}
-	
+
 	// Gmail web UI hides these by default (they're under "More")
 	// Let's only show the main folders to match the clean Gmail UI
-	
+
 	// Skip "All Mail" - it's under "More" in Gmail
 	if name == "[Gmail]/All Mail" {
 		return true
 	}
-	
-	// Skip "Important" - it's under "More" in Gmail  
+
+	// Skip "Important" - it's under "More" in Gmail
 	if name == "[Gmail]/Important" {
 		return true
 	}
-	
+
 	// Skip "Starred" - it's a smart label in Gmail, not a real folder
 	if name == "[Gmail]/Starred" {
 		return true
 	}
-	
+
 	// Skip "Snoozed" - another smart label
 	if strings.Contains(name, "Snoozed") {
 		return true
 	}
-	
+
 	// Skip "Scheduled" - another smart label
 	if strings.Contains(name, "Scheduled") {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -100,12 +99,12 @@ func shouldSkipFolder(name string) bool {
 func cleanFolderName(name string) string {
 	// Remove [Gmail]/ prefix
 	name = strings.TrimPrefix(name, "[Gmail]/")
-	
+
 	// Gmail uses "Sent Mail" but we'll show it as "Sent"
 	if name == "Sent Mail" {
 		return "Sent"
 	}
-	
+
 	return name
 }
 
@@ -140,28 +139,37 @@ func (c *Client) ListFolders(ctx context.Context) ([]*models.Folder, error) {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	// List all mailboxes
+	// List all folders using wildcard
+	// For Gmail, this includes INBOX, [Gmail]/..., and custom labels
 	mailboxes, err := c.imap.List("", "*", nil).Collect()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list mailboxes: %w", err)
+		return nil, fmt.Errorf("failed to list folders: %w", err)
 	}
 
 	folders := make([]*models.Folder, 0, len(mailboxes))
+	seen := make(map[string]bool)
+
 	for _, mbox := range mailboxes {
+		// Deduplicate
+		if seen[mbox.Mailbox] {
+			continue
+		}
+		seen[mbox.Mailbox] = true
+
 		// Skip folders that shouldn't be shown
 		if shouldSkipFolder(mbox.Mailbox) {
 			continue
 		}
-		
+
 		// Clean up the folder name for display
 		displayName := cleanFolderName(mbox.Mailbox)
 		folderType := determineFolderType(mbox.Mailbox)
-		
+
 		folder := &models.Folder{
 			ID:          c.account.ID + "-" + mbox.Mailbox,
 			AccountID:   c.account.ID,
 			Name:        mbox.Mailbox, // Keep original name for IMAP operations
-			DisplayName: displayName,   // Show cleaned name to user
+			DisplayName: displayName,  // Show cleaned name to user
 			Type:        folderType,
 		}
 		folders = append(folders, folder)
@@ -188,10 +196,6 @@ func (c *Client) FetchEmails(ctx context.Context, folderName string, limit int) 
 		return nil, fmt.Errorf("failed to select mailbox: %w", err)
 	}
 
-	if mboxData.NumMessages == 0 {
-		return []*models.Email{}, nil
-	}
-
 	// Calculate sequence set for most recent emails
 	start := uint32(1)
 	end := mboxData.NumMessages
@@ -202,36 +206,26 @@ func (c *Client) FetchEmails(ctx context.Context, folderName string, limit int) 
 	seqSet := imap.SeqSet{}
 	seqSet.AddRange(start, end)
 
-	// Fetch email data
+	// Fetch by sequence number - UID is automatically included in response
 	fetchOptions := &imap.FetchOptions{
 		Envelope: true,
 		Flags:    true,
-		UID:      true,
 	}
 
-	fetchCmd := c.imap.Fetch(seqSet, fetchOptions)
-	defer fetchCmd.Close()
+	messages, err := c.imap.Fetch(seqSet, fetchOptions).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("fetch failed: %w", err)
+	}
 
-	emails := make([]*models.Email, 0, limit)
-	
-	for {
-		msg := fetchCmd.Next()
-		if msg == nil {
-			break
-		}
-
+	var emails []*models.Email
+	for _, msg := range messages {
 		email, err := c.parseMessage(msg)
 		if err != nil {
 			// Log error but continue
 			continue
 		}
-
 		email.AccountID = c.account.ID
 		emails = append(emails, email)
-	}
-
-	if err := fetchCmd.Close(); err != nil {
-		return nil, fmt.Errorf("fetch error: %w", err)
 	}
 
 	// Reverse to show newest first
@@ -242,37 +236,194 @@ func (c *Client) FetchEmails(ctx context.Context, folderName string, limit int) 
 	return emails, nil
 }
 
-// FetchEmailBody fetches the full body of an email
-func (c *Client) FetchEmailBody(ctx context.Context, folderName string, uid uint32) (string, string, error) {
+// FetchEmailBody fetches the full body of an email by sequence number
+func (c *Client) FetchEmailBody(ctx context.Context, folderName string, seqNum uint32) (string, string, error) {
 	if c.imap == nil {
 		return "", "", fmt.Errorf("not connected")
 	}
 
-	// For now, return placeholder
-	// TODO: Implement body fetching with correct API
-	return "Email body preview coming soon...", "", nil
+	// Select mailbox if not selected
+	_, err := c.imap.Select(folderName, nil).Wait()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to select folder %s: %w", folderName, err)
+	}
+
+	// Fetch body by sequence number
+	seqSet := imap.SeqSet{}
+	seqSet.AddNum(seqNum)
+
+	bodySection := &imap.FetchItemBodySection{}
+	fetchOptions := &imap.FetchOptions{
+		BodySection: []*imap.FetchItemBodySection{bodySection},
+	}
+
+	messages, err := c.imap.Fetch(seqSet, fetchOptions).Collect()
+	if err != nil {
+		return "", "", fmt.Errorf("fetch failed for seq %d: %w", seqNum, err)
+	}
+
+	if len(messages) == 0 {
+		return "", "", fmt.Errorf("message not found: seq %d in folder %s", seqNum, folderName)
+	}
+
+	msg := messages[0]
+
+	// Find the body section in the buffer
+	var bodyBytes []byte
+	for _, buf := range msg.BodySection {
+		if buf.Section == bodySection {
+			bodyBytes = buf.Bytes
+			break
+		}
+	}
+
+	if bodyBytes == nil && len(msg.BodySection) > 0 {
+		bodyBytes = msg.BodySection[0].Bytes
+	}
+
+	if bodyBytes == nil {
+		return "", "", nil
+	}
+
+	// Parse MIME message to extract text and HTML parts
+	textBody, htmlBody, err := parseMIMEBody(bodyBytes)
+	if err != nil {
+		// If MIME parsing fails, return raw body
+		return string(bodyBytes), "", nil
+	}
+
+	return textBody, htmlBody, nil
 }
 
-func (c *Client) parseMessage(msg *imapclient.FetchMessageData) (*models.Email, error) {
-	// The FetchMessageData structure varies between beta versions
-	// For now, create a basic email with what we can safely access
-	
+// parseMIMEBody parses a MIME message and extracts text and HTML parts
+func parseMIMEBody(bodyBytes []byte) (string, string, error) {
+	// For now, just return the raw body as text
+	// TODO: Implement proper MIME parsing with go-message library
+	// This requires handling multipart messages, base64 decoding, etc.
+
+	// Simple approach: try to detect if it's just plain text
+	body := string(bodyBytes)
+
+	// If it looks like HTML, put it in HTML
+	if strings.Contains(body, "<html") || strings.Contains(body, "<HTML") {
+		return "", body, nil
+	}
+
+	// Otherwise treat as plain text
+	return body, "", nil
+}
+
+func (c *Client) parseMessage(msg *imapclient.FetchMessageBuffer) (*models.Email, error) {
+	envelope := msg.Envelope
+	if envelope == nil {
+		return &models.Email{
+			ID:      fmt.Sprintf("%d", msg.SeqNum),
+			Subject: "(No Envelope)",
+		}, nil
+	}
+
+	// Parse date
+	date := envelope.Date
+
+	// Parse sender
+	var from *models.EmailAddress
+	if len(envelope.From) > 0 {
+		from = &models.EmailAddress{
+			Name:    envelope.From[0].Name,
+			Address: fmt.Sprintf("%s@%s", envelope.From[0].Mailbox, envelope.From[0].Host),
+		}
+	}
+
+	// Parse recipient
+	var to []*models.EmailAddress
+	for _, addr := range envelope.To {
+		to = append(to, &models.EmailAddress{
+			Name:    addr.Name,
+			Address: fmt.Sprintf("%s@%s", addr.Mailbox, addr.Host),
+		})
+	}
+
+	// Parse flags
+	read := false
+	starred := false
+	for _, flag := range msg.Flags {
+		if flag == imap.FlagSeen {
+			read = true
+		}
+		if flag == imap.FlagFlagged {
+			starred = true
+		}
+	}
+
+	// Use sequence number as ID (stable within a folder session)
 	email := &models.Email{
-		ID:       fmt.Sprintf("%d", 1), // Placeholder
-		Subject:  "Email (preview mode)",
-		Date:     time.Now(),
-		Read:     false,
-		Priority: models.PriorityMedium,
-		From: &models.EmailAddress{
-			Name:    "Sender",
-			Address: "sender@example.com",
-		},
-		To: []*models.EmailAddress{
-			{Name: "You", Address: c.account.Email},
-		},
+		ID:        fmt.Sprintf("%d", msg.SeqNum),
+		MessageID: envelope.MessageID,
+		Subject:   envelope.Subject,
+		Date:      date,
+		From:      from,
+		To:        to,
+		Read:      read,
+		Starred:   starred,
+		Priority:  models.PriorityMedium, // Default
 	}
 
 	return email, nil
+}
+
+// Archive moves emails to the Archive folder (or All Mail)
+func (c *Client) Archive(ctx context.Context, uids []uint32) error {
+	if c.imap == nil {
+		return fmt.Errorf("not connected")
+	}
+	return c.Delete(ctx, uids)
+}
+
+// Delete marks emails as deleted
+func (c *Client) Delete(ctx context.Context, uids []uint32) error {
+	if c.imap == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	seqSet := imap.SeqSet{}
+	for _, uid := range uids {
+		seqSet.AddNum(uid)
+	}
+
+	// Add \Deleted flag
+	storeFlags := imap.StoreFlags{
+		Op:     imap.StoreFlagsAdd,
+		Flags:  []imap.Flag{imap.FlagDeleted},
+		Silent: true,
+	}
+
+	// Use Close() instead of Wait() for Store command
+	return c.imap.Store(seqSet, &storeFlags, nil).Close()
+}
+
+// MarkRead marks emails as read or unread
+func (c *Client) MarkRead(ctx context.Context, uids []uint32, read bool) error {
+	if c.imap == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	seqSet := imap.SeqSet{}
+	for _, uid := range uids {
+		seqSet.AddNum(uid)
+	}
+
+	op := imap.StoreFlagsAdd
+	if !read {
+		op = imap.StoreFlagsDel
+	}
+
+	storeFlags := imap.StoreFlags{
+		Op:     op,
+		Flags:  []imap.Flag{imap.FlagSeen},
+		Silent: true,
+	}
+
+	return c.imap.Store(seqSet, &storeFlags, nil).Close()
 }
 
 func determineFolderType(name string) models.FolderType {

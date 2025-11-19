@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -318,8 +319,9 @@ func (m *Model) renderEmailView() string {
 	previewWidth := m.width - treeWidth - 35 // Remaining space
 	listWidth := 35
 
-	// Adjust heights
-	panelHeight := m.height - 2 // Reserve space for status bar
+	// Add top margin and adjust heights for cleaner borders
+	topMargin := 1
+	panelHeight := m.height - 2 - topMargin // Reserve space for status bar and top margin
 
 	// Render panels with focus indication
 	treeView := m.renderPanel(
@@ -346,12 +348,16 @@ func (m *Model) renderEmailView() string {
 		m.focusPanel == FocusPanelPreview,
 	)
 
-	return lipgloss.JoinHorizontal(
+	// Add top margin for cleaner rendering
+	panels := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		treeView,
 		listView,
 		previewView,
 	)
+	
+	// Add top spacing
+	return "\n" + panels
 }
 
 func (m *Model) renderCalendarView() string {
@@ -359,31 +365,53 @@ func (m *Model) renderCalendarView() string {
 }
 
 func (m *Model) renderPanel(content string, width, height int, title string, focused bool) string {
-	style := borderStyle
+	// Border and title colors based on focus
+	borderColor := colorBorder
+	titleColor := colorMuted
 	if focused {
-		style = activeBorderStyle
+		borderColor = colorPrimary
+		titleColor = colorPrimary
 	}
 
-	titleStyle := lipgloss.NewStyle().
-		Foreground(colorPrimary).
-		Bold(true)
+	// Style the title
+	styledTitle := lipgloss.NewStyle().
+		Foreground(titleColor).
+		Bold(true).
+		Render(title)
 
-	if !focused {
-		titleStyle = lipgloss.NewStyle().
-			Foreground(colorMuted)
+	// Create a horizontal line separator
+	separator := lipgloss.NewStyle().
+		Foreground(borderColor).
+		Render(strings.Repeat("─", width-4))
+
+	// Calculate content area height
+	// Total height - 2 (borders) - 2 (padding) - 1 (title) - 1 (separator)
+	contentHeight := height - 6
+	if contentHeight < 0 {
+		contentHeight = 0
 	}
 
-	header := titleStyle.Render(title)
+	// Apply height constraint to content
+	styledContent := lipgloss.NewStyle().
+		Height(contentHeight).
+		Render(content)
 
-	return style.
+	// Stack title, separator, and content
+	inner := lipgloss.JoinVertical(
+		lipgloss.Left,
+		styledTitle,
+		separator,
+		styledContent,
+	)
+
+	// Wrap in a complete border
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1).
 		Width(width).
 		Height(height).
-		Render(lipgloss.JoinVertical(
-			lipgloss.Left,
-			header,
-			RenderDivider(width-4),
-			content,
-		))
+		Render(inner)
 }
 
 func (m *Model) renderWithOverlay(overlay string) string {

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/yourusername/loki/internal/models"
+	"github.com/yshuman1/loki/internal/models"
 )
 
 type TreeModel struct {
@@ -209,9 +209,8 @@ func (m *TreeModel) View() string {
 				line = treeNodeStyle.Render(fmt.Sprintf("%s%s%s %s", indent, icon, selectedIcon, name))
 			}
 		} else if node.nodeType == models.TreeNodeTypeFolder {
-			// Clean up folder name - remove [Gmail]/ prefix
+			// Use the cleaned display name
 			name := node.folder.DisplayName
-			name = strings.TrimPrefix(name, "[Gmail]/")
 			
 			// Truncate if too long
 			if len(name) > 15 {

@@ -16,11 +16,11 @@ type TreeModel struct {
 }
 
 type TreeNode struct {
-	nodeType models.TreeNodeType
-	account  *models.Account
-	folder   *models.Folder
-	level    int
-	expanded bool
+	nodeType    models.TreeNodeType
+	account     *models.Account
+	folder      *models.Folder
+	level       int
+	expanded    bool
 	hasChildren bool
 }
 
@@ -34,18 +34,18 @@ func NewTreeModel() *TreeModel {
 
 func (m *TreeModel) SetAccounts(accounts []*models.Account) {
 	m.nodes = make([]*TreeNode, 0)
-	
+
 	for _, account := range accounts {
 		// Add account node
 		accountNode := &TreeNode{
-			nodeType: models.TreeNodeTypeAccount,
-			account:  account,
-			level:    0,
-			expanded: account.Expanded,
+			nodeType:    models.TreeNodeTypeAccount,
+			account:     account,
+			level:       0,
+			expanded:    account.Expanded,
 			hasChildren: true,
 		}
 		m.nodes = append(m.nodes, accountNode)
-		
+
 		// Note: Folders will be loaded from IMAP and set separately
 		// For now, just show the account
 	}
@@ -61,11 +61,11 @@ func (m *TreeModel) SetFolders(accountID string, folders []*models.Folder) {
 			break
 		}
 	}
-	
+
 	if accountIndex == -1 {
 		return
 	}
-	
+
 	// Remove old folder nodes for this account
 	newNodes := make([]*TreeNode, 0)
 	for i, node := range m.nodes {
@@ -77,21 +77,21 @@ func (m *TreeModel) SetFolders(accountID string, folders []*models.Folder) {
 			break
 		}
 	}
-	
+
 	// Add new folder nodes if account is expanded
 	if m.nodes[accountIndex].expanded {
 		for _, folder := range folders {
 			folderNode := &TreeNode{
-				nodeType: models.TreeNodeTypeFolder,
-				folder:  folder,
-				level:   1,
-				expanded: false,
+				nodeType:    models.TreeNodeTypeFolder,
+				folder:      folder,
+				level:       1,
+				expanded:    false,
 				hasChildren: false,
 			}
 			newNodes = append(newNodes, folderNode)
 		}
 	}
-	
+
 	m.nodes = newNodes
 }
 
@@ -103,20 +103,20 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 			if m.cursor < len(m.nodes)-1 {
 				m.cursor++
 			}
-			
+
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-			
+
 		case "g":
 			// Go to top
 			m.cursor = 0
-			
+
 		case "G":
 			// Go to bottom
 			m.cursor = len(m.nodes) - 1
-			
+
 		case "o", "enter", "l", "right":
 			// Expand node
 			if m.cursor < len(m.nodes) {
@@ -130,7 +130,7 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 					}
 				}
 			}
-			
+
 		case "O", "h", "left":
 			// Collapse node
 			if m.cursor < len(m.nodes) {
@@ -141,7 +141,7 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 					m.rebuildNodes()
 				}
 			}
-			
+
 		case " ":
 			// Select folder
 			m.selected = m.cursor
@@ -159,7 +159,7 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 			}
 		}
 	}
-	
+
 	return m, nil
 }
 
@@ -176,11 +176,11 @@ func (m *TreeModel) rebuildNodes() {
 
 func (m *TreeModel) View() string {
 	var b strings.Builder
-	
+
 	for i, node := range m.nodes {
 		// Indent based on level
 		indent := strings.Repeat("  ", node.level)
-		
+
 		// Expand/collapse icon
 		icon := ""
 		if node.hasChildren {
@@ -192,46 +192,46 @@ func (m *TreeModel) View() string {
 		} else {
 			icon = "  "
 		}
-		
+
 		// Selected indicator
 		selectedIcon := " "
 		if i == m.selected {
 			selectedIcon = "●"
 		}
-		
+
 		// Render node
 		var line string
 		if node.nodeType == models.TreeNodeTypeAccount {
 			name := node.account.Name
 			if i == m.cursor {
-				line = treeNodeSelectedStyle.Render(fmt.Sprintf("%s%s%s %s", indent, icon, selectedIcon, name))
+				line = treeNodeSelectedStyle.Render(fmt.Sprintf("%s%s%s %s", indent, selectedIcon, name, icon))
 			} else {
-				line = treeNodeStyle.Render(fmt.Sprintf("%s%s%s %s", indent, icon, selectedIcon, name))
+				line = treeNodeStyle.Render(fmt.Sprintf("%s%s%s %s", indent, selectedIcon, name, icon))
 			}
 		} else if node.nodeType == models.TreeNodeTypeFolder {
 			// Use the cleaned display name
 			name := node.folder.DisplayName
-			
+
 			// Truncate if too long
 			if len(name) > 15 {
 				name = name[:12] + "..."
 			}
-			
+
 			unread := ""
 			if node.folder.UnreadCount > 0 {
 				unread = fmt.Sprintf(" (%d)", node.folder.UnreadCount)
 			}
 			if i == m.cursor {
-				line = treeNodeSelectedStyle.Render(fmt.Sprintf("%s%s%s %s%s", indent, icon, selectedIcon, name, unread))
+				line = treeNodeSelectedStyle.Render(fmt.Sprintf("%s%s%s %s%s", indent, selectedIcon, name, unread, icon))
 			} else {
-				line = treeNodeStyle.Render(fmt.Sprintf("%s%s%s %s%s", indent, icon, selectedIcon, name, unread))
+				line = treeNodeStyle.Render(fmt.Sprintf("%s%s%s %s%s", indent, selectedIcon, name, unread, icon))
 			}
 		}
-		
+
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	
+
 	return b.String()
 }
 

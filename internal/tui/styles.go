@@ -13,8 +13,8 @@ var (
 	colorDanger    = lipgloss.Color("#FF0000") // Red
 	colorMuted     = lipgloss.Color("#666666") // Gray
 	colorText      = lipgloss.Color("#FFFFFF") // White
-	colorBg        = lipgloss.Color("#1a1a1a") // Dark gray
-	colorBgLight   = lipgloss.Color("#2a2a2a") // Lighter gray
+	colorBg        = lipgloss.Color("#000000") // Black
+	colorBgLight   = lipgloss.Color("#1a1a1a") // Dark gray (formerly colorBg)
 	colorBorder    = lipgloss.Color("#444444") // Border gray
 
 	// Priority colors
@@ -27,6 +27,12 @@ var (
 	baseStyle = lipgloss.NewStyle().
 			Foreground(colorText).
 			Background(colorBg)
+
+	// Header styles
+	headerStyle = lipgloss.NewStyle().
+			Foreground(colorPrimary).
+			Bold(true).
+			Padding(0, 1)
 
 	// Border styles
 	borderStyle = lipgloss.NewStyle().
@@ -171,7 +177,7 @@ var (
 	// Status bar styles
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(colorText).
-			Background(colorBgLight).
+			Background(colorBg).
 			Padding(0, 1)
 
 	statusBarKeyStyle = lipgloss.NewStyle().

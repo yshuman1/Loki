@@ -32,30 +32,30 @@ const (
 // Model is the main application model
 type Model struct {
 	// View state
-	viewMode    ViewMode
-	focusPanel  FocusPanel
-	width       int
-	height      int
+	viewMode   ViewMode
+	focusPanel FocusPanel
+	width      int
+	height     int
 
 	// Data
-	accounts      []*models.Account
-	currentEmail  *models.Email
+	accounts       []*models.Account
+	currentEmail   *models.Email
 	currentMeeting *models.Meeting
-	emails        []*models.Email
-	meetings      []*models.Meeting
+	emails         []*models.Email
+	meetings       []*models.Meeting
 
 	// UI components
-	tree         *TreeModel
-	emailList    *EmailListModel
-	preview      *PreviewModel
-	calendar     *CalendarModel
-	claudeChat   *ClaudeChatModel
-	scheduler    *SchedulerModel
+	tree       *TreeModel
+	emailList  *EmailListModel
+	preview    *PreviewModel
+	calendar   *CalendarModel
+	claudeChat *ClaudeChatModel
+	scheduler  *SchedulerModel
 
 	// State
-	loading       bool
-	error         string
-	statusMessage string
+	loading        bool
+	error          string
+	statusMessage  string
 	showClaudeChat bool
 	showScheduler  bool
 
@@ -203,7 +203,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.accounts = msg.Accounts
 		m.tree.SetAccounts(msg.Accounts)
 		return m, nil
-		
+
 	case FoldersLoadedMsg:
 		m.tree.SetFolders(msg.AccountID, msg.Folders)
 		m.statusMessage = fmt.Sprintf("Loaded %d folders", len(msg.Folders))
@@ -224,11 +224,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.error = msg.Error
 		m.statusMessage = "Error: " + msg.Error
 		return m, nil
-		
+
 	case FolderSelectedMsg:
 		m.statusMessage = fmt.Sprintf("Loading emails from %s...", msg.FolderName)
 		return m, m.loadEmailsForFolder(msg.AccountID, msg.FolderName)
-		
+
 	case AccountExpandedMsg:
 		m.statusMessage = fmt.Sprintf("Loading folders...")
 		return m, m.loadFoldersForAccount(msg.AccountID)
@@ -303,32 +303,55 @@ func (m *Model) View() string {
 		mainView = m.renderCalendarView()
 	}
 
+	// Add header
+	header := m.renderHeader()
+
 	// Add status bar
 	statusBar := m.renderStatusBar()
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		mainView,
-		statusBar,
-	)
+	// Calculate content height
+	// Height - header (1) - status bar (1)
+	contentHeight := m.height - 2
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
+
+	return baseStyle.
+		Width(m.width).
+		Height(m.height).
+		Render(lipgloss.JoinVertical(
+			lipgloss.Left,
+			header,
+			mainView,
+			statusBar,
+		))
+}
+
+func (m *Model) renderHeader() string {
+	return headerStyle.
+		Width(m.width).
+		Render("LOKI")
 }
 
 func (m *Model) renderEmailView() string {
 	// Calculate panel widths
-	treeWidth := 20
+	treeWidth := 30
 	previewWidth := m.width - treeWidth - 35 // Remaining space
 	listWidth := 35
 
 	// Add top margin and adjust heights for cleaner borders
-	topMargin := 1
-	panelHeight := m.height - 2 - topMargin // Reserve space for status bar and top margin
+	// Total height - header (1) - status bar (1) - top margin (0)
+	panelHeight := m.height - 2
+	if panelHeight < 0 {
+		panelHeight = 0
+	}
 
 	// Render panels with focus indication
 	treeView := m.renderPanel(
 		m.tree.View(),
 		treeWidth,
 		panelHeight,
-		"Accounts/Folders",
+		"Folders",
 		m.focusPanel == FocusPanelTree,
 	)
 
@@ -355,7 +378,7 @@ func (m *Model) renderEmailView() string {
 		listView,
 		previewView,
 	)
-	
+
 	// Add top spacing
 	return "\n" + panels
 }
@@ -409,8 +432,8 @@ func (m *Model) renderPanel(content string, width, height int, title string, foc
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Padding(0, 1).
-		Width(width).
-		Height(height).
+		Width(width - 4).   // Subtract 2 for border + 2 for padding
+		Height(height - 2). // Subtract 2 for border
 		Render(inner)
 }
 
@@ -448,14 +471,45 @@ func (m *Model) renderStatusBar() string {
 	left := m.renderStatusLeft()
 	right := m.renderStatusRight()
 
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	// Calculate available space for centering
+	// We want 'right' (shortcuts) to be centered if possible
+	// But 'left' (status) needs to be on the left
+
+	// Actually, user asked to center the bottom menu (shortcuts)
+	// So we keep status on left, and center the shortcuts
+
+	width := m.width
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+
+	// Calculate padding to center 'right'
+	// Total width = left + gap1 + right + gap2
+	// We want gap1 + right + gap2 to be centered relative to the remaining space?
+	// Or just center 'right' in the whole bar, but ensure it doesn't overlap 'left'
+
+	// Simple approach: Left aligned status, Center aligned shortcuts
+
+	centerPos := width / 2
+	rightStart := centerPos - (rightWidth / 2)
+
+	if rightStart < leftWidth+2 {
+		rightStart = leftWidth + 2
+	}
+
+	gap := rightStart - leftWidth
 	if gap < 0 {
 		gap = 0
 	}
 
+	// Remaining space after right
+	endGap := width - leftWidth - gap - rightWidth
+	if endGap < 0 {
+		endGap = 0
+	}
+
 	return statusBarStyle.
 		Width(m.width).
-		Render(left + lipgloss.NewStyle().Width(gap).Render("") + right)
+		Render(left + lipgloss.NewStyle().Width(gap).Render("") + right + lipgloss.NewStyle().Width(endGap).Render(""))
 }
 
 func (m *Model) renderStatusLeft() string {
@@ -468,8 +522,6 @@ func (m *Model) renderStatusLeft() string {
 	}
 
 	parts := []string{
-		statusBarKeyStyle.Render("LOKI"),
-		statusBarSeparatorStyle.Render("·"),
 		mode,
 	}
 
@@ -532,7 +584,7 @@ func (m *Model) connectAndLoad() tea.Msg {
 		if err != nil {
 			continue
 		}
-		
+
 		// Update folder counts
 		for _, folder := range folders {
 			status, err := m.emailManager.GetFolderStatus(ctx, account.ID, folder.Name)

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/yourusername/loki/internal/models"
+	"github.com/yshuman1/loki/internal/models"
 )
 
 type EmailListModel struct {
@@ -72,7 +72,7 @@ func (m *EmailListModel) View() string {
 		var line string
 		if i == m.cursor {
 			line = emailItemSelectedStyle.Render(
-				fmt.Sprintf("%s %s %4s\n   %s", 
+				fmt.Sprintf("%s %s %4s\n   %s",
 					priorityIcon, from, timeStr, subject),
 			)
 		} else {

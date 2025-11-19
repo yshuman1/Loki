@@ -1,11 +1,10 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/yourusername/loki/internal/models"
+	"github.com/yshuman1/loki/internal/models"
 )
 
 type PreviewModel struct {

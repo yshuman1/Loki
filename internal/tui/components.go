@@ -2,7 +2,7 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/yourusername/loki/internal/models"
+	"github.com/yshuman1/loki/internal/models"
 )
 
 // CalendarModel - stub for calendar view
@@ -99,22 +99,22 @@ func (m *SchedulerModel) Update(msg tea.Msg) (*SchedulerModel, tea.Cmd) {
 
 func (m *SchedulerModel) View() string {
 	title := modalTitleStyle.Render("📅 Schedule Meeting") + "\n\n"
-	
+
 	content := inputLabelStyle.Render("Title: ") + m.title + "\n\n"
-	
+
 	if len(m.attendees) > 0 {
 		content += inputLabelStyle.Render("Attendees:\n")
 		for _, attendee := range m.attendees {
 			content += "  • " + attendee.Address + "\n"
 		}
 	}
-	
+
 	content += "\n"
 	content += inputLabelStyle.Render("When: ") + "[t]omorrow [w]eek [c]ustom\n"
 	content += inputLabelStyle.Render("Duration: ") + "30 min\n"
 	content += inputLabelStyle.Render("Location: ") + "[z]oom [o]ffice [c]ustom\n"
 	content += "\n"
 	content += helpStyle.Render("[Enter] Create  [Esc] Cancel")
-	
+
 	return title + content
 }

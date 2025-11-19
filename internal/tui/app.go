@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/yourusername/loki/internal/models"
+	"github.com/yshuman1/loki/internal/config"
+	"github.com/yshuman1/loki/internal/email"
+	"github.com/yshuman1/loki/internal/models"
 )
 
 // ViewMode represents the current view mode
@@ -55,20 +58,38 @@ type Model struct {
 	showClaudeChat bool
 	showScheduler  bool
 
-	// Services (injected)
-	emailService    interface{} // Will be *email.Client
+	// Services
+	emailManager    *email.Manager
 	calendarService interface{} // Will be *calendar.Client
 	claudeService   interface{} // Will be *agent.ClaudeService
+	config          *config.Config
 }
 
 // NewModel creates a new TUI model
 func NewModel() *Model {
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		// Create with empty config if load fails
+		cfg = &config.Config{
+			Accounts: []config.AccountConfig{},
+		}
+	}
+
+	// Convert config accounts to models
+	accounts := cfg.ToModels()
+
+	// Initialize email manager
+	emailMgr := email.NewManager(accounts)
+
 	m := &Model{
-		viewMode:   ViewModeEmail,
-		focusPanel: FocusPanelTree,
-		accounts:   make([]*models.Account, 0),
-		emails:     make([]*models.Email, 0),
-		meetings:   make([]*models.Meeting, 0),
+		viewMode:     ViewModeEmail,
+		focusPanel:   FocusPanelTree,
+		accounts:     accounts,
+		emails:       make([]*models.Email, 0),
+		meetings:     make([]*models.Meeting, 0),
+		emailManager: emailMgr,
+		config:       cfg,
 	}
 
 	// Initialize sub-models
@@ -86,7 +107,7 @@ func NewModel() *Model {
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
-		m.loadAccounts,
+		m.connectAndLoad,
 	)
 }
 
@@ -181,10 +202,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.accounts = msg.Accounts
 		m.tree.SetAccounts(msg.Accounts)
 		return m, nil
+		
+	case FoldersLoadedMsg:
+		m.tree.SetFolders(msg.AccountID, msg.Folders)
+		m.statusMessage = fmt.Sprintf("Loaded %d folders", len(msg.Folders))
+		return m, nil
 
 	case EmailsLoadedMsg:
 		m.emails = msg.Emails
 		m.emailList.SetEmails(msg.Emails)
+		m.statusMessage = fmt.Sprintf("Loaded %d emails", len(msg.Emails))
 		return m, nil
 
 	case EmailSelectedMsg:
@@ -196,6 +223,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.error = msg.Error
 		m.statusMessage = "Error: " + msg.Error
 		return m, nil
+		
+	case FolderSelectedMsg:
+		m.statusMessage = fmt.Sprintf("Loading emails from %s...", msg.FolderName)
+		return m, m.loadEmailsForFolder(msg.AccountID, msg.FolderName)
+		
+	case AccountExpandedMsg:
+		m.statusMessage = fmt.Sprintf("Loading folders...")
+		return m, m.loadFoldersForAccount(msg.AccountID)
 	}
 
 	// Route updates to focused component
@@ -422,7 +457,6 @@ func (m *Model) renderStatusLeft() string {
 
 func (m *Model) renderStatusRight() string {
 	shortcuts := []string{
-		"Account:A",
 		"Archive:a",
 		"Reply:r",
 		"Claude:c",
@@ -433,14 +467,14 @@ func (m *Model) renderStatusRight() string {
 	}
 
 	parts := make([]string, 0)
-	for _, shortcut := range shortcuts {
+	for i, shortcut := range shortcuts {
 		parts = append(parts, helpKeyStyle.Render(shortcut))
+		if i < len(shortcuts)-1 {
+			parts = append(parts, statusBarSeparatorStyle.Render(" │ "))
+		}
 	}
 
-	return lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Left, parts...),
-	)
+	return lipgloss.JoinHorizontal(lipgloss.Left, parts...)
 }
 
 func (m *Model) cycleFocus() {
@@ -456,23 +490,54 @@ func (m *Model) cycleFocus() {
 
 // Commands
 
-func (m *Model) loadAccounts() tea.Msg {
-	// TODO: Load from config/storage
-	accounts := []*models.Account{
-		{
-			ID:    "1",
-			Name:  "Personal",
-			Email: "personal@example.com",
-			Type:  models.AccountTypeIMAP,
-		},
-		{
-			ID:    "2",
-			Name:  "DispoTag",
-			Email: "yasin@dispotag.com",
-			Type:  models.AccountTypeGmail,
-		},
+func (m *Model) connectAndLoad() tea.Msg {
+	// Connect to email accounts
+	ctx := context.Background()
+	if err := m.emailManager.Connect(ctx); err != nil {
+		return ErrorMsg{Error: fmt.Sprintf("Failed to connect: %v", err)}
 	}
+
+	// Get accounts with real folders
+	accounts := m.emailManager.GetAccounts()
+	for _, account := range accounts {
+		folders, err := m.emailManager.GetFolders(ctx, account.ID)
+		if err != nil {
+			continue
+		}
+		
+		// Update folder counts
+		for _, folder := range folders {
+			status, err := m.emailManager.GetFolderStatus(ctx, account.ID, folder.Name)
+			if err == nil {
+				folder.UnreadCount = status.UnreadCount
+				folder.TotalCount = status.TotalCount
+			}
+		}
+	}
+
 	return AccountsLoadedMsg{Accounts: accounts}
+}
+
+func (m *Model) loadEmailsForFolder(accountID, folderName string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		emails, err := m.emailManager.GetEmails(ctx, accountID, folderName, 50)
+		if err != nil {
+			return ErrorMsg{Error: fmt.Sprintf("Failed to load emails: %v", err)}
+		}
+		return EmailsLoadedMsg{Emails: emails}
+	}
+}
+
+func (m *Model) loadFoldersForAccount(accountID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		folders, err := m.emailManager.GetFolders(ctx, accountID)
+		if err != nil {
+			return ErrorMsg{Error: fmt.Sprintf("Failed to load folders: %v", err)}
+		}
+		return FoldersLoadedMsg{AccountID: accountID, Folders: folders}
+	}
 }
 
 func (m *Model) triageInbox() tea.Msg {
@@ -484,6 +549,11 @@ func (m *Model) triageInbox() tea.Msg {
 
 type AccountsLoadedMsg struct {
 	Accounts []*models.Account
+}
+
+type FoldersLoadedMsg struct {
+	AccountID string
+	Folders   []*models.Folder
 }
 
 type EmailsLoadedMsg struct {

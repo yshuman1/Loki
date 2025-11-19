@@ -79,7 +79,7 @@ type Email struct {
 	ThreadID    string
 	InReplyTo   string
 	References  []string
-	
+
 	// AI-enhanced fields
 	Priority    Priority
 	Category    string
@@ -87,7 +87,7 @@ type Email struct {
 	ActionItems []string
 	HasMeeting  bool
 	Meeting     *MeetingInEmail
-	
+
 	// UI state
 	Read     bool
 	Starred  bool
@@ -172,10 +172,10 @@ type Meeting struct {
 	Organizer   *EmailAddress
 	Status      MeetingStatus
 	Recurrence  *Recurrence
-	
+
 	// Link back to email if created from one
 	FromEmailID string
-	
+
 	// Video conferencing
 	ConferenceData *ConferenceData
 }

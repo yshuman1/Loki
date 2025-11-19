@@ -46,63 +46,53 @@ func (m *TreeModel) SetAccounts(accounts []*models.Account) {
 		}
 		m.nodes = append(m.nodes, accountNode)
 		
-		// Add folders if expanded
-		if account.Expanded {
-			folders := m.getDefaultFolders(account.ID)
-			for _, folder := range folders {
-				folderNode := &TreeNode{
-					nodeType: models.TreeNodeTypeFolder,
-					folder:  folder,
-					level:   1,
-					expanded: false,
-					hasChildren: false,
-				}
-				m.nodes = append(m.nodes, folderNode)
-			}
-		}
+		// Note: Folders will be loaded from IMAP and set separately
+		// For now, just show the account
 	}
 }
 
-func (m *TreeModel) getDefaultFolders(accountID string) []*models.Folder {
-	return []*models.Folder{
-		{
-			ID:          accountID + "-inbox",
-			AccountID:   accountID,
-			Name:        "INBOX",
-			DisplayName: "Inbox",
-			Type:        models.FolderTypeInbox,
-			UnreadCount: 23,
-		},
-		{
-			ID:          accountID + "-sent",
-			AccountID:   accountID,
-			Name:        "Sent",
-			DisplayName: "Sent",
-			Type:        models.FolderTypeSent,
-		},
-		{
-			ID:          accountID + "-drafts",
-			AccountID:   accountID,
-			Name:        "Drafts",
-			DisplayName: "Drafts",
-			Type:        models.FolderTypeDrafts,
-			UnreadCount: 2,
-		},
-		{
-			ID:          accountID + "-archive",
-			AccountID:   accountID,
-			Name:        "Archive",
-			DisplayName: "Archive",
-			Type:        models.FolderTypeArchive,
-		},
-		{
-			ID:          accountID + "-trash",
-			AccountID:   accountID,
-			Name:        "Trash",
-			DisplayName: "Trash",
-			Type:        models.FolderTypeTrash,
-		},
+// SetFolders adds folders for an account
+func (m *TreeModel) SetFolders(accountID string, folders []*models.Folder) {
+	// Find the account node
+	accountIndex := -1
+	for i, node := range m.nodes {
+		if node.nodeType == models.TreeNodeTypeAccount && node.account.ID == accountID {
+			accountIndex = i
+			break
+		}
 	}
+	
+	if accountIndex == -1 {
+		return
+	}
+	
+	// Remove old folder nodes for this account
+	newNodes := make([]*TreeNode, 0)
+	for i, node := range m.nodes {
+		if i <= accountIndex {
+			newNodes = append(newNodes, node)
+		} else if node.nodeType == models.TreeNodeTypeAccount {
+			// Hit next account, add it and everything after
+			newNodes = append(newNodes, m.nodes[i:]...)
+			break
+		}
+	}
+	
+	// Add new folder nodes if account is expanded
+	if m.nodes[accountIndex].expanded {
+		for _, folder := range folders {
+			folderNode := &TreeNode{
+				nodeType: models.TreeNodeTypeFolder,
+				folder:  folder,
+				level:   1,
+				expanded: false,
+				hasChildren: false,
+			}
+			newNodes = append(newNodes, folderNode)
+		}
+	}
+	
+	m.nodes = newNodes
 }
 
 func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
@@ -131,11 +121,13 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 			// Expand node
 			if m.cursor < len(m.nodes) {
 				node := m.nodes[m.cursor]
-				if node.nodeType == models.TreeNodeTypeAccount {
+				if node.nodeType == models.TreeNodeTypeAccount && !node.expanded {
 					node.expanded = true
 					node.account.Expanded = true
-					// Rebuild nodes
-					m.rebuildNodes()
+					// Emit message to load folders
+					return m, func() tea.Msg {
+						return AccountExpandedMsg{AccountID: node.account.ID}
+					}
 				}
 			}
 			
@@ -153,7 +145,18 @@ func (m *TreeModel) Update(msg tea.Msg) (*TreeModel, tea.Cmd) {
 		case " ":
 			// Select folder
 			m.selected = m.cursor
-			// TODO: Load emails for selected folder
+			// Emit folder selected message
+			if m.cursor < len(m.nodes) {
+				node := m.nodes[m.cursor]
+				if node.nodeType == models.TreeNodeTypeFolder {
+					return m, func() tea.Msg {
+						return FolderSelectedMsg{
+							AccountID:  node.folder.AccountID,
+							FolderName: node.folder.Name,
+						}
+					}
+				}
+			}
 		}
 	}
 	
@@ -206,7 +209,15 @@ func (m *TreeModel) View() string {
 				line = treeNodeStyle.Render(fmt.Sprintf("%s%s%s %s", indent, icon, selectedIcon, name))
 			}
 		} else if node.nodeType == models.TreeNodeTypeFolder {
+			// Clean up folder name - remove [Gmail]/ prefix
 			name := node.folder.DisplayName
+			name = strings.TrimPrefix(name, "[Gmail]/")
+			
+			// Truncate if too long
+			if len(name) > 15 {
+				name = name[:12] + "..."
+			}
+			
 			unread := ""
 			if node.folder.UnreadCount > 0 {
 				unread = fmt.Sprintf(" (%d)", node.folder.UnreadCount)
@@ -233,4 +244,15 @@ func (m *TreeModel) GetSelectedFolder() *models.Folder {
 		}
 	}
 	return nil
+}
+
+// FolderSelectedMsg is emitted when a folder is selected
+type FolderSelectedMsg struct {
+	AccountID  string
+	FolderName string
+}
+
+// AccountExpandedMsg is emitted when an account is expanded
+type AccountExpandedMsg struct {
+	AccountID string
 }

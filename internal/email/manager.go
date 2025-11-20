@@ -126,15 +126,18 @@ func (m *Manager) GetEmailBody(ctx context.Context, accountID, folderName string
 		return nil, fmt.Errorf("account not connected: %s", accountID)
 	}
 
-	textBody, htmlBody, err := client.FetchEmailBody(ctx, folderName, seqNum)
+	// Fetch full body
+	body, bodyHTML, params, err := client.FetchEmailBody(ctx, folderName, seqNum)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch email body: %w", err)
 	}
 
-	// Create a simple email object with body
+	// Create a simple email object with body and params
 	email := &models.Email{
-		Body:     textBody,
-		BodyHTML: htmlBody,
+		Body:       body,
+		BodyHTML:   bodyHTML,
+		BodyParams: params,
+		Loaded:     true,
 	}
 
 	return email, nil

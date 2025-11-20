@@ -1,6 +1,7 @@
 package email
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/mail"
 	"github.com/yshuman1/loki/internal/models"
 )
 
@@ -237,15 +239,15 @@ func (c *Client) FetchEmails(ctx context.Context, folderName string, limit int) 
 }
 
 // FetchEmailBody fetches the full body of an email by sequence number
-func (c *Client) FetchEmailBody(ctx context.Context, folderName string, seqNum uint32) (string, string, error) {
+func (c *Client) FetchEmailBody(ctx context.Context, folderName string, seqNum uint32) (string, string, map[string]string, error) {
 	if c.imap == nil {
-		return "", "", fmt.Errorf("not connected")
+		return "", "", nil, fmt.Errorf("not connected")
 	}
 
 	// Select mailbox if not selected
 	_, err := c.imap.Select(folderName, nil).Wait()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to select folder %s: %w", folderName, err)
+		return "", "", nil, fmt.Errorf("failed to select folder %s: %w", folderName, err)
 	}
 
 	// Fetch body by sequence number
@@ -259,11 +261,11 @@ func (c *Client) FetchEmailBody(ctx context.Context, folderName string, seqNum u
 
 	messages, err := c.imap.Fetch(seqSet, fetchOptions).Collect()
 	if err != nil {
-		return "", "", fmt.Errorf("fetch failed for seq %d: %w", seqNum, err)
+		return "", "", nil, fmt.Errorf("fetch failed for seq %d: %w", seqNum, err)
 	}
 
 	if len(messages) == 0 {
-		return "", "", fmt.Errorf("message not found: seq %d in folder %s", seqNum, folderName)
+		return "", "", nil, fmt.Errorf("message not found: seq %d in folder %s", seqNum, folderName)
 	}
 
 	msg := messages[0]
@@ -282,35 +284,22 @@ func (c *Client) FetchEmailBody(ctx context.Context, folderName string, seqNum u
 	}
 
 	if bodyBytes == nil {
-		return "", "", nil
+		return "", "", nil, nil
 	}
 
-	// Parse MIME message to extract text and HTML parts
-	textBody, htmlBody, err := parseMIMEBody(bodyBytes)
+	// Parse MIME message using new renderer
+	mr, err := mail.CreateReader(bytes.NewReader(bodyBytes))
 	if err != nil {
-		// If MIME parsing fails, return raw body
-		return string(bodyBytes), "", nil
+		// If it's not a valid MIME message, it might be just plain text
+		return string(bodyBytes), "", nil, nil
 	}
 
-	return textBody, htmlBody, nil
-}
-
-// parseMIMEBody parses a MIME message and extracts text and HTML parts
-func parseMIMEBody(bodyBytes []byte) (string, string, error) {
-	// For now, just return the raw body as text
-	// TODO: Implement proper MIME parsing with go-message library
-	// This requires handling multipart messages, base64 decoding, etc.
-
-	// Simple approach: try to detect if it's just plain text
-	body := string(bodyBytes)
-
-	// If it looks like HTML, put it in HTML
-	if strings.Contains(body, "<html") || strings.Contains(body, "<HTML") {
-		return "", body, nil
+	extracted, err := ExtractBody(mr)
+	if err != nil {
+		return string(bodyBytes), "", nil, nil
 	}
 
-	// Otherwise treat as plain text
-	return body, "", nil
+	return extracted.Text, extracted.HTML, extracted.Params, nil
 }
 
 func (c *Client) parseMessage(msg *imapclient.FetchMessageBuffer) (*models.Email, error) {

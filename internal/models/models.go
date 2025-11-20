@@ -73,6 +73,7 @@ type Email struct {
 	Date        time.Time
 	Body        string
 	BodyHTML    string
+	BodyParams  map[string]string // Content-Type params (e.g. format=flowed)
 	Attachments []*Attachment
 	Flags       []string
 	Labels      []string
@@ -92,6 +93,7 @@ type Email struct {
 	Read     bool
 	Starred  bool
 	Selected bool
+	Loaded   bool // Whether the full body has been fetched
 }
 
 type EmailAddress struct {

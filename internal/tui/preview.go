@@ -3,85 +3,104 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/yshuman1/loki/internal/email"
 	"github.com/yshuman1/loki/internal/models"
 )
 
 type PreviewModel struct {
-	email  *models.Email
-	scroll int
-	height int
+	email    *models.Email
+	viewport viewport.Model
+	width    int
+	height   int
 }
 
 func NewPreviewModel() *PreviewModel {
-	return &PreviewModel{}
+	return &PreviewModel{
+		viewport: viewport.New(0, 0),
+	}
 }
 
 func (m *PreviewModel) SetEmail(email *models.Email) {
 	m.email = email
-	m.scroll = 0
+	m.renderContent()
 }
 
-func (m *PreviewModel) Update(msg tea.Msg) (*PreviewModel, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "j", "down":
-			m.scroll++
-		case "k", "up":
-			if m.scroll > 0 {
-				m.scroll--
-			}
-		case "g":
-			m.scroll = 0
-		}
-	}
-	return m, nil
+func (m *PreviewModel) SetSize(width, height int) {
+	m.width = width
+	m.height = height
+	m.viewport.Width = width
+	m.viewport.Height = height
+	m.renderContent()
 }
 
-func (m *PreviewModel) View() string {
+func (m *PreviewModel) renderContent() {
 	if m.email == nil {
-		return helpStyle.Render("Select an email to preview")
+		m.viewport.SetContent(helpStyle.Render("Select an email to preview"))
+		return
 	}
+
+	// Render the body using the new renderer
+	// We pass the viewport width (minus padding) to ensure proper wrapping
+	renderWidth := m.viewport.Width - 4
+	if renderWidth < 40 {
+		renderWidth = 40 // Minimum width
+	}
+
+	body, _ := email.RenderBody(m.email.Body, renderWidth, m.email.BodyParams)
+
+	// Render headers
+	headers := email.RenderHeaders(
+		m.email.From.Address,
+		strings.Join(func() []string {
+			var addrs []string
+			for _, t := range m.email.To {
+				addrs = append(addrs, t.Address)
+			}
+			return addrs
+		}(), ", "),
+		m.email.Subject,
+		m.email.Date.Format("Mon Jan 02, 2006 3:04 PM"),
+		renderWidth,
+	)
 
 	var b strings.Builder
-
-	// Headers
-	b.WriteString(previewFromStyle.Render("From: ") + m.email.From.Address + "\n")
-	b.WriteString(previewMetaStyle.Render("To: ") + m.email.To[0].Address + "\n")
-	b.WriteString(previewSubjectStyle.Render("Subject: ") + m.email.Subject + "\n")
-	b.WriteString(previewMetaStyle.Render("Date: ") + m.email.Date.Format("Mon Jan 2, 2006 3:04 PM") + "\n")
-	b.WriteString("\n")
-	b.WriteString(RenderDivider(60))
-	b.WriteString("\n")
-
-	// Body
-	body := m.email.Body
-	if body == "" {
-		body = "No content"
-	}
-	b.WriteString(previewBodyStyle.Render(body))
+	b.WriteString(headers)
+	b.WriteString("\n\n")
+	b.WriteString(body)
 	b.WriteString("\n\n")
 
 	// Claude summary if available
 	if m.email.Summary != "" {
-		b.WriteString(RenderDivider(60))
-		b.WriteString("\n")
-		b.WriteString(claudeBoxStyle.Render(
+		b.WriteString(RenderDivider(m.width) + "\n")
+		b.WriteString(claudeBoxStyle.Width(m.width - 4).Render(
 			claudeTitleStyle.Render("🤖 Claude Summary") + "\n\n" +
 				claudeTextStyle.Render(m.email.Summary),
 		))
+		b.WriteString("\n")
 	}
 
 	// Meeting detection
 	if m.email.HasMeeting && m.email.Meeting != nil {
 		b.WriteString("\n")
-		b.WriteString(meetingBoxStyle.Render(
+		b.WriteString(meetingBoxStyle.Width(m.width - 4).Render(
 			meetingTitleStyle.Render("📅 Meeting Detected") + "\n" +
 				meetingTimeStyle.Render(m.email.Meeting.Title) + "\n" +
 				meetingTimeStyle.Render(m.email.Meeting.StartTime.Format("Mon Jan 2, 3:04 PM")),
 		))
 	}
 
-	return b.String()
+	m.viewport.SetContent(b.String())
+	m.viewport.GotoTop()
+}
+
+func (m *PreviewModel) Update(msg tea.Msg) (*PreviewModel, tea.Cmd) {
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
+}
+
+func (m *PreviewModel) View() string {
+	return m.viewport.View()
 }

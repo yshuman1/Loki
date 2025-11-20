@@ -234,6 +234,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+		// Update preview size
+		treeWidth := 30
+		listWidth := 35
+		previewWidth := m.width - treeWidth - listWidth
+		if previewWidth < 0 {
+			previewWidth = 0
+		}
+
+		// Height calculation:
+		// Total - header(1) - status(1) - border(2) - padding(2) - title(1) - separator(1) = Total - 8
+		// But renderPanel uses height-6 for content.
+		// Let's match renderPanel logic:
+		// panelHeight = m.height - 3 (header+status+margin)
+		// contentHeight = panelHeight - 6
+		// So contentHeight = m.height - 9
+
+		contentHeight := m.height - 9
+		if contentHeight < 0 {
+			contentHeight = 0
+		}
+
+		m.preview.SetSize(previewWidth-4, contentHeight) // -4 for padding/border inside panel
 		return m, nil
 
 	case AccountsLoadedMsg:
@@ -526,9 +549,11 @@ func (m *Model) renderPanel(content string, width, height int, title string, foc
 		contentHeight = 0
 	}
 
-	// Apply height constraint to content
+	// Apply height and width constraint to content
 	styledContent := lipgloss.NewStyle().
 		Height(contentHeight).
+		Width(width - 4).
+		MaxWidth(width - 4).
 		Render(content)
 
 	// Stack title, separator, and content
@@ -540,13 +565,16 @@ func (m *Model) renderPanel(content string, width, height int, title string, foc
 	)
 
 	// Wrap in a complete border
-	return lipgloss.NewStyle().
+	panel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(width - 4).   // Subtract 2 for border + 2 for padding
 		Height(height - 2). // Subtract 2 for border
 		Render(inner)
+
+	// Force exact size to prevent layout shifts
+	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, panel)
 }
 
 func (m *Model) renderWithOverlay(overlay string) string {
